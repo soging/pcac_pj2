@@ -1,7 +1,8 @@
 import os
 import math
 import multiprocessing
-
+from torch.distributions import Beta
+from scipy.special import betainc
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
@@ -13,6 +14,7 @@ from tqdm import tqdm
 from plyfile import PlyElement, PlyData
 from pyntcloud import PyntCloud
 from pytorch3d.ops.knn import knn_gather, knn_points
+from torch.distributions.laplace import Laplace
 
 
 #core transformation function
@@ -333,61 +335,81 @@ def get_cdf_ycocg(mu, sigma):
     return cdf_with_0
 
 
-#opacity에 맞게 수정
 def get_cdf_reflactance(mu, sigma):
     M, d = sigma.shape
-    mu = mu.unsqueeze(-1).repeat(1, 1, 50)
-    sigma = sigma.unsqueeze(-1).repeat(1, 1, 50).clamp(1e-5, 1e10)
-    gaussian = torch.distributions.laplace.Laplace(mu, sigma)
-    flag = torch.linspace(-20, 20, 50).to(sigma.device).view(1, 1, 50).repeat((M, d, 1))
-    cdf = gaussian.cdf(flag + 0.2)
+    
+    # mu와 sigma를 반복적으로 확장 (20000개의 flag에 대해 계산)
+    mu = mu.unsqueeze(-1).repeat(1, 1, 17000)
+    sigma = sigma.unsqueeze(-1).repeat(1, 1, 17000)
 
+    # gaussian = torch.distributions.laplace.Laplace(mu, sigma)
+    gaussian = Laplace(mu, sigma)
+    
+    # mu와 sigma의 최소, 최대 값 계산
+    mu_min, mu_max = mu.min(), mu.max()
+    sigma_mean = sigma.mean()
+
+    flag_min = 0.0
+    flag_max = 1.0
+    flags = torch.linspace(flag_min, flag_max, 17000).to(sigma.device)
+    flags = flags.view(1, 1, -1).repeat(M, d, 1)
+
+    # Laplace 분포 객체 생성
+    laplace_dist = Laplace(mu, sigma)
+    flag_min = torch.tensor(0.0).to(mu.device)
+    flag_max = torch.tensor(1.0).to(mu.device)
+    total_prob = laplace_dist.cdf(flag_max) - laplace_dist.cdf(flag_min)
+    cdf = (laplace_dist.cdf(flags) - laplace_dist.cdf(flag_min)) / total_prob
+    
+
+    # CDF에 0 값을 추가
     spatial_dimensions = cdf.shape[:-1] + (1,)
     zeros = torch.zeros(spatial_dimensions, dtype=cdf.dtype, device=cdf.device)
     cdf_with_0 = torch.cat([zeros, cdf], dim=-1)
+    
     return cdf_with_0
-
 
 def feature_probs_based_mu_sigma(feature, mu, sigma):
     sigma = sigma.clamp(1e-5, 1e10)
     # print(mu.shape, sigma.shape, feature.shape)
     gaussian = torch.distributions.laplace.Laplace(mu, sigma)
-    probs = gaussian.cdf(feature+0.5) - gaussian.cdf(feature-0.5)
+    probs = gaussian.cdf(feature+0.005) - gaussian.cdf(feature-0.005)
     total_bits = torch.sum(torch.clamp(-1.0 * torch.log(probs + 1e-10) / math.log(2.0), 0, 50))
     return total_bits, probs
 
+def get_cdf_reflectance_beta(alpha, beta):
+    M, d = alpha.shape
+
+    # 플래그 범위 설정
+    flag_min = 0
+    flag_max = 1
+    num_flags = 17000
+    flags = torch.linspace(flag_min, flag_max, num_flags).to(alpha.device)
+    flags = flags.view(1, 1, -1).repeat(M, d, 1)
+
+    # alpha와 beta를 확장
+    alpha_expanded = alpha.unsqueeze(-1).repeat(1, 1, num_flags)
+    beta_expanded = beta.unsqueeze(-1).repeat(1, 1, num_flags)
+
+
+    cdf = torch.tensor(betainc(alpha_expanded.cpu().numpy(), beta_expanded.cpu().numpy(), flags.cpu().numpy())).to(alpha.device)
+
+    return cdf
 
 def get_file_size_in_bits(f):
     return os.stat(f).st_size * 8
 
-
 def _convert_to_int_and_normalize(cdf_float, needs_normalization):
-  """Convert floatingpoint CDF to integers. See README for more info.
-
-  The idea is the following:
-  When we get the cdf here, it is (assumed to be) between 0 and 1, i.e,
-    cdf \in [0, 1)
-  (note that 1 should not be included.)
-  We now want to convert this to int16 but make sure we do not get
-  the same value twice, as this would break the arithmetic coder
-  (you need a strictly monotonically increasing function).
-  So, if needs_normalization==True, we multiply the input CDF
-  with 2**16 - (Lp - 1). This means that now,
-    cdf \in [0, 2**16 - (Lp - 1)].
-  Then, in a final step, we add an arange(Lp), which is just a line with
-  slope one. This ensure that for sure, we will get unique, strictly
-  monotonically increasing CDFs, which are \in [0, 2**16)
-  """
-  Lp = cdf_float.shape[-1]
-  factor = torch.tensor(
-    2, dtype=torch.float32, device=cdf_float.device).pow_(16)
-  new_max_value = factor
-  if needs_normalization:
-    new_max_value = new_max_value - (Lp - 1)
-  cdf_float = cdf_float.mul(new_max_value)
-  cdf_float = cdf_float.round()
-  cdf = cdf_float.to(dtype=torch.int16, non_blocking=True)
-  if needs_normalization:
-    r = torch.arange(Lp, dtype=torch.int16, device=cdf.device)
-    cdf.add_(r)
-  return cdf
+    Lp = cdf_float.shape[-1]
+    factor = torch.tensor(65536, dtype=torch.float32, device=cdf_float.device)  # 2**16 사용
+    new_max_value = factor
+    if needs_normalization:
+        new_max_value = new_max_value - (Lp - 1)
+    cdf_float = cdf_float.mul(new_max_value).round()
+    
+    if needs_normalization:
+        r = torch.arange(Lp, dtype=torch.float32, device=cdf_float.device)
+        cdf_float.add_(r)
+    
+    cdf_float = torch.clip(cdf_float, 0, 65535)
+    return cdf_float.to(torch.int16, non_blocking=True)

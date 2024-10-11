@@ -1,10 +1,11 @@
 from plyfile import PlyData, PlyElement
 import numpy as np
 import os
+import torch
 
 
-file_path_1 = '/home/tongtue8301/project/PoLoPCAC/data/bicycle/point_cloud.ply'
-file_path_2 = '/home/tongtue8301/project/PoLoPCAC/data/opacity_decompressed/point_cloud.ply.bin.ply'
+file_path_1 = '../../urp-data/data/bicycle/point_cloud.ply'
+file_path_2 = 'bicycle_decompressed/point_cloud.ply.bin.ply'
 
 
 ply_data1 = PlyData.read(file_path_1)
@@ -13,18 +14,20 @@ print(ply_data1)
 print(ply_data2)
 
 # 첫 번째 몇 개의 점 정보 출력
-# first_points_1 = ply_data1['vertex']['opacity'].data[-10:]  # 첫 5개의 점 정보
-first_points_2 = ply_data2['vertex']['opacity'].data[16344:16500]  # 첫 5개의 점 정보
+# first_points_1 = ply_data1['vertex']['opacity'].data[16344:16500]  # 첫 5개의 점 정보
+# first_points_2 = ply_data2['vertex']['opacity'].data[16344:16500]  # 첫 5개의 점 정보
 # max_first_points_1, min_first_point_1 = ply_data1['vertex']['opacity'].max(), ply_data1['vertex']['opacity'].min()  # 첫 5개의 점 정보
 # max_first_points_2, min_first_point_2 = ply_data2['vertex']['opacity'].max(), ply_data2['vertex']['opacity'].min()  # 첫 5개의 점 정보
 
 # print(max_first_points_1, min_first_point_1, max_first_points_2, min_first_point_2)
+first_points_1 = ply_data1['vertex']['opacity'].data[18000:18009]  # 첫 5개의 점 정보
+first_points_2 = ply_data2['vertex']['opacity'].data[18000:18009] 
 
-
-# for point1 in first_points_1:
-#     print(point1)
+for point1 in first_points_1:
+    point_tensor = torch.tensor([point1], dtype=torch.float32)
+    print(torch.sigmoid(point_tensor))
     
-
+print("----------")
 for point in first_points_2:
     print(point)
     

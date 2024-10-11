@@ -50,7 +50,7 @@ files = files[:]
 # Load the network
 net = Network(local_region=args.local_region, granularity=args.granularity, init_ratio=args.init_ratio, expand_ratio=args.expand_ratio)
 net.load_state_dict(torch.load(args.ckpt))
-net = torch.compile(net, mode='max-autotune')
+# net = torch.compile(net, mode='max-autotune')
 net.cuda().eval()
 
 # Warm up model
@@ -87,7 +87,7 @@ with torch.no_grad():
             target_geo = batch_x_geo[:, cursor:cursor+window_size, :].cuda()
             cursor += window_size
 
-            context_attr = context_attr_base.float().cuda() / 20
+            context_attr = context_attr_base.float().cuda()
             context_attr = context_attr.repeat((1, 1, 1))
 
             _, idx, context_grouped_geo = knn_points(target_geo, context_geo, K=net.local_region, return_nn=True)
@@ -100,17 +100,20 @@ with torch.no_grad():
             mu_sigma = net.mu_sigma_pred(feature)
             mu, sigma = mu_sigma[:, :, :1], torch.exp(mu_sigma[:, :, 1:])
 
-            cdf = kit.get_cdf_reflactance(mu[0]*20, sigma[0])
+            cdf = kit.get_cdf_reflactance(mu[0], sigma[0])
             cdf = cdf[:, 0, :]
             comp_f = os.path.join(args.compressed_path, fname+f'.{i}.bin')
+            print(f"Completed: {comp_f}")
             with open(comp_f, 'rb') as fin:
                 byte_stream = fin.read()
             decomp_attr = torchac.decode_int16_normalized_cdf(
-                kit._convert_to_int_and_normalize(cdf, True).cpu(),
-                byte_stream)
+                kit._convert_to_int_and_normalize(cdf, True).cpu(), byte_stream
+            )
             decomp_attr = decomp_attr.view(1, -1, 1)
-            context_attr_base = torch.cat((context_attr_base, decomp_attr), dim=1)
+            decomp_attr = decomp_attr.float() / 16384.0
+            context_attr_base = torch.cat((context_attr_base, decomp_attr), dim=1).clamp(0,1)
             i += 1
+            
 
         decompressed_pc = torch.cat((batch_x_geo, context_attr_base), dim=-1)
         torch.cuda.synchronize()

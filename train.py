@@ -1,145 +1,100 @@
 import os
 import argparse
 import datetime
-
 import numpy as np
 from glob import glob
 
 import torch
 import torch.utils.data as Data
-from pytorch3d.ops.knn import _KNN, knn_gather, knn_points
 
 import kit
 from net import Network
+import wandb
 
+# Initialize wandb
+wandb.init(project='pcac', entity='ownvoy')
+wandb.config.learning_rate = 0.0001
+wandb.config.batch_size = 1
+wandb.config.lr_decay = 0.1
+wandb.config.lr_decay_steps = 30000
+wandb.config.max_steps = 170000
+wandb.config.local_region = 8
+wandb.config.granularity = 2**14
+wandb.config.init_ratio = 256
+wandb.config.expand_ratio = 2
 
-
+# Seed setting
 torch.cuda.manual_seed(11)
 torch.manual_seed(11)
 np.random.seed(11)
 
-
-parser = argparse.ArgumentParser(
-    prog='train.py',
-    description='Training from scratch.',
-    formatter_class=argparse.ArgumentDefaultsHelpFormatter
-)
-
+# Argument parser setup
+parser = argparse.ArgumentParser(prog='train.py', description='Training from scratch.', formatter_class=argparse.ArgumentDefaultsHelpFormatter)
 parser.add_argument('--training_data', required=True, help='Training data (Glob pattern).')
 parser.add_argument('--model_save_folder', required=True, help='Directory where to save trained models.')
-
-parser.add_argument('--learning_rate', type=float, help='Learning rate.', default=0.0001)
-parser.add_argument('--batch_size', type=int, help='Batch size.', default=1)
-parser.add_argument('--lr_decay', type=float, help='Decays the learning rate to x times the original.', default=0.1)
-parser.add_argument('--lr_decay_steps', type=int, help='Decays the learning rate every x steps.', default=30000)
-parser.add_argument('--max_steps', type=int, help='Train up to this number of steps.', default=50000)
-
-parser.add_argument('--local_region', type=int, help='Neighbooring scope for context windows (i.e., K).', default=8)
-parser.add_argument('--granularity', type=int, help='Upper limit for each group (i.e., s*).', default=2**14)
-parser.add_argument('--init_ratio', type=int, help='The ratio for size of the very first group (i.e., alpha).', default=256)
-parser.add_argument('--expand_ratio', type=int, help='Expand ratio (i.e., r)', default=2)
-
 args = parser.parse_args()
 
-
-def collate_fn(batch):
-    max_points = max([sample.shape[0] for sample in batch])  # 가장 긴 샘플 길이
-
-    padded_batch = []
-    masks = []
-
-    for sample in batch:
-        num_points = sample.shape[0]
-
-        # NumPy 배열을 텐서로 변환
-        sample = torch.tensor(sample, dtype=torch.float32)  # 텐서로 변환
-
-        # 패딩 추가
-        padding = torch.zeros((max_points - num_points, sample.shape[1]))  # 0으로 패딩
-        padded_sample = torch.cat([sample, padding], dim=0)  # 텐서를 이어붙임
-
-        # 마스크 생성
-        mask = torch.cat([torch.ones(num_points), torch.zeros(max_points - num_points)])  # 실제 데이터는 1, 패딩은 0
-
-        padded_batch.append(padded_sample)
-        masks.append(mask)
-
-    padded_batch = torch.stack(padded_batch)  # 텐서로 변환 (batch_size, max_points, num_features)
-    masks = torch.stack(masks)  # 마스크 텐서로 변환 (batch_size, max_points)
-
-    return padded_batch, masks, max_points  # (batch_size, max_points, num_features), (batch_size, max_points)
-
-
-
-
-# CREATE MODEL SAVE PATH
+# Directory setup for model saving
 if not os.path.exists(args.model_save_folder):
     os.makedirs(args.model_save_folder)
 
+# Data preparation
 files = np.array(glob(args.training_data, recursive=True))
 np.random.shuffle(files)
-files = files[:]
-# points = kit.read_point_clouds_ycocg(files)
 points = kit.read_point_clouds_gaussian(files)
 
+# DataLoader setup
+loader = Data.DataLoader(dataset=points, batch_size=wandb.config.batch_size, shuffle=True)
 
-loader = Data.DataLoader(
-    dataset = points,
-    batch_size = args.batch_size,
-    shuffle = True,
-    # collate_fn = collate_fn
-)
+# Network and optimizer setup
+ae = Network(local_region=wandb.config.local_region, granularity=wandb.config.granularity, init_ratio=wandb.config.init_ratio, expand_ratio=wandb.config.expand_ratio).cuda().train()
+optimizer = torch.optim.Adam(ae.parameters(), lr=wandb.config.learning_rate)
 
-ae = Network(local_region=args.local_region, granularity=args.granularity, init_ratio=args.init_ratio, expand_ratio=args.expand_ratio).cuda().train()
-optimizer = torch.optim.Adam(ae.parameters(), lr=args.learning_rate)
-
-bpps, losses = [], []
+# Training loop
 global_step = 0
-
+min_bpp = 1000000
 for epoch in range(1, 9999):
-    print(datetime.datetime.now())
-    # for step, (batch_x, mask, max_points) in enumerate(loader):
+    epoch_losses = []
+    epoch_bpps = []
+
     for step, (batch_x) in enumerate(loader):
-        B, N, _ = batch_x.shape
-        # B, N = batch_x.shape
         batch_x = batch_x.cuda()
-        # mask = mask.cuda()
-        # print(B, N, max_points, mask.sum())
-        
-
         optimizer.zero_grad()
-
         total_bits = ae(batch_x)
-        # bpp = (total_bits * mask).sum() / mask.sum() / B
-        bpp = total_bits / B / N
+        bpp = total_bits / wandb.config.batch_size / batch_x.shape[1]
         loss = bpp
-
+        bpp = bpp.item()
         loss.backward()
-
         optimizer.step()
         global_step += 1
 
-        # PRINT
-        losses.append(loss.item())
-        bpps.append(bpp.item())
+        # Accumulate metrics
+        epoch_losses.append(loss.item())
+        epoch_bpps.append(bpp)
 
-        if global_step % 500 == 0:
-            print(f'Epoch:{epoch} | Step:{global_step} | bpp:{round(np.array(bpps).mean(), 5)} | Loss:{round(np.array(losses).mean(), 5)}')
-            bpps, losses = [], []
-        
-         # LEARNING RATE DECAY
-        if global_step % args.lr_decay_steps == 0:
-            args.learning_rate = args.learning_rate * args.lr_decay
-            for g in optimizer.param_groups:
-                g['lr'] = args.learning_rate
-            print(f'Learning rate decay triggered at step {global_step}, LR is setting to{args.learning_rate}.')
+        if global_step % 200 == 0:
+            print(f"Global Step: {global_step}, BPP: {bpp}")
 
-        # SAVE MODEL
-        if global_step % 500 == 0:
-            torch.save(ae.state_dict(), args.model_save_folder + f'ckpt.pt')
+        # Model saving condition
         
-        if global_step >= args.max_steps:
+
+        # Learning rate decay
+        if global_step % wandb.config.lr_decay_steps == 0:
+            new_lr = optimizer.param_groups[0]['lr'] * wandb.config.lr_decay
+            optimizer.param_groups[0]['lr'] = new_lr
+            print(f'Learning rate decay triggered at step {global_step}, LR is now {new_lr}.')
+
+        if global_step >= wandb.config.max_steps:
             break
 
-    if global_step >= args.max_steps:
+    # Log epoch metrics
+    avg_loss = sum(epoch_losses) / len(epoch_losses)
+    avg_bpp = sum(epoch_bpps) / len(epoch_bpps)
+    wandb.log({"epoch": epoch, "avg_loss": avg_loss, "avg_bpp": avg_bpp, "learning_rate": optimizer.param_groups[0]['lr']})
+    if min_bpp >= avg_bpp:
+            min_bpp = avg_bpp
+            print("model saved")
+            torch.save(ae.state_dict(), os.path.join(args.model_save_folder, 'ckpt.pt'))
+            wandb.save(os.path.join(args.model_save_folder, 'ckpt.pt'))
+    if global_step >= wandb.config.max_steps:
         break

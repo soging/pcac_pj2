@@ -46,7 +46,7 @@ files = files[:]
 net = Network(local_region=args.local_region, granularity=args.granularity, init_ratio=args.init_ratio,
               expand_ratio=args.expand_ratio)
 net.load_state_dict(torch.load(args.ckpt))
-net = torch.compile(net, mode='max-autotune')
+# net = torch.compile(net, mode='max-autotune')
 net.cuda().eval()
 
 # Warm up the model (for better performance)
@@ -63,6 +63,8 @@ with torch.no_grad():
         batch_x = batch_x.cuda()
 
         B, N, _ = batch_x.shape
+        batch_x[:, :, 3] = torch.sigmoid(batch_x[:, :, 3])
+
         print(B,N)
 
         torch.cuda.synchronize()
@@ -98,12 +100,10 @@ with torch.no_grad():
         total_ac_time = 0
         total_bits = 0
         for i in range(len(target_ls)):
+        # for i in range(3):
             target_geo, target_attr = target_ls[i][:, :, :3].clone(), target_ls[i][:, :, 3:].clone()
             context_geo, context_attr = context_ls[i][:, :, :3].clone(), context_ls[i][:, :, 3:].clone()
             target_attr, context_attr = target_attr.repeat((1, 1, 1)), context_attr.repeat((1, 1, 1))
-
-            context_attr[:, :, 0] = context_attr[:, :, 0] / 20  # Opacity normalization
-            # Other normalizations can be applied here
 
             _, idx, context_grouped_geo = knn_points(target_geo, context_geo, K=net.local_region, return_nn=True)
             context_grouped_attr = knn_gather(context_attr, idx)
@@ -115,16 +115,19 @@ with torch.no_grad():
             mu_sigma = net.mu_sigma_pred(feature)
             mu, sigma = mu_sigma[:, :, :1], torch.exp(mu_sigma[:, :, 1:])
 
-            cdf = kit.get_cdf_reflactance(mu[0] * 20, sigma[0])
-            target_feature = (target_attr[0]).to(torch.int16)
+            cdf = kit.get_cdf_reflactance(mu[0], sigma[0])
+            target_feature = (target_attr[0] * 16384).to(torch.int16)
             cdf = cdf[:, 0, :]
             target_feature = target_feature[:, 0]
 
-            byte_stream = torchac.encode_float_cdf(cdf.cpu(), target_feature.cpu(), check_input_bounds=True)
+            byte_stream = torchac.encode_int16_normalized_cdf(
+                kit._convert_to_int_and_normalize(cdf, True).cpu(),
+                target_feature.cpu())
 
             comp_f = os.path.join(args.compressed_path, fname + f'.{i}.bin')
             with open(comp_f, 'wb') as fout:
                 fout.write(byte_stream)
+            print(f"Completed: {comp_f}")
 
             total_bits += kit.get_file_size_in_bits(comp_f)
 
