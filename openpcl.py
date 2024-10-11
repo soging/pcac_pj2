@@ -1,20 +1,25 @@
 from plyfile import PlyData, PlyElement
 import numpy as np
 import os
+import kit
 
 
-file_path_1 = '/home/tongtue8301/project/PoLoPCAC/data/bicycle/point_cloud.ply'
-file_path_2 = '/home/tongtue8301/project/PoLoPCAC/data/opacity_decompressed/point_cloud.ply.bin.ply'
+file_path_1 = '/home/tongtue8301/project/PoLoPCAC/data/opacity_decompressed/point_cloud.ply.bin.ply'
+file_path_2 = '/home/tongtue8301/project/PoLoPCAC/data/bicycle/point_cloud.ply'
 
 
 ply_data1 = PlyData.read(file_path_1)
 ply_data2 = PlyData.read(file_path_2)
-print(ply_data1)
-print(ply_data2)
+# print(ply_data1)
+# print(ply_data2)
+
+ply_data1['vertex']['opacity'] = kit.inverse_sigmoid(ply_data1['vertex']['opacity']/1000)
 
 # 첫 번째 몇 개의 점 정보 출력
-# first_points_1 = ply_data1['vertex']['opacity'].data[-10:]  # 첫 5개의 점 정보
-first_points_2 = ply_data2['vertex']['opacity'].data[16344:16500]  # 첫 5개의 점 정보
+# first_points_1 = ply_data1['vertex']['opacity'].data[-995245:-995240]  # 첫 5개의 점 정보
+# first_points_2 = ply_data2['vertex']['opacity'].data[-995245:-995240]  # 첫 5개의 점 정보
+# first_points_1 = np.array(ply_data1['vertex']['opacity'].mean())  # 첫 5개의 점 정보
+# first_points_2 = np.array(ply_data2['vertex']['opacity'].mean())  # 첫 5개의 점 정보
 # max_first_points_1, min_first_point_1 = ply_data1['vertex']['opacity'].max(), ply_data1['vertex']['opacity'].min()  # 첫 5개의 점 정보
 # max_first_points_2, min_first_point_2 = ply_data2['vertex']['opacity'].max(), ply_data2['vertex']['opacity'].min()  # 첫 5개의 점 정보
 
@@ -24,9 +29,11 @@ first_points_2 = ply_data2['vertex']['opacity'].data[16344:16500]  # 첫 5개의
 # for point1 in first_points_1:
 #     print(point1)
     
+# # print(first_points_1)
+# # print(first_points_2)
 
-for point in first_points_2:
-    print(point)
+# for point in first_points_2:
+#     print(point)
     
 # # 2. Vertex 데이터 접근 (필요한 속성만 선택)
 # x = vertex_data['x']
@@ -35,10 +42,10 @@ for point in first_points_2:
 # opacity = vertex_data['opacity']
 
 
-# ply_data2['vertex']['x'] = ply_data1['vertex']['x'].data
-# ply_data2['vertex']['y'] = ply_data1['vertex']['y'].data
-# ply_data2['vertex']['z'] = ply_data1['vertex']['z'].data
-# ply_data2['vertex']['opacity'] = ply_data1['vertex']['opacity'].data
+ply_data2['vertex']['x'] = ply_data1['vertex']['x'].data
+ply_data2['vertex']['y'] = ply_data1['vertex']['y'].data
+ply_data2['vertex']['z'] = ply_data1['vertex']['z'].data
+ply_data2['vertex']['opacity'] = ply_data1['vertex']['opacity'].data
 
 # first_points_1 = ply_data1['vertex']['x'].data[:5]  # 첫 5개의 점 정보
 # first_points_2 = ply_data2['vertex']['x'].data[:5]  # 첫 5개의 점 정보
@@ -50,7 +57,7 @@ for point in first_points_2:
 #     print(point)
 
 
-# ply_data2.write('/home/tongtue8301/project/PoLoPCAC/data/bicycle_compress_sum/point_cloud.ply')
+ply_data2.write('/home/tongtue8301/project/PoLoPCAC/data/bicycle_compress_sum/point_cloud.ply')
 
 # points = ply_data2['vertex']['opacity'].max()
 # print(points)

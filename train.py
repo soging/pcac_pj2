@@ -28,14 +28,14 @@ parser = argparse.ArgumentParser(
 parser.add_argument('--training_data', required=True, help='Training data (Glob pattern).')
 parser.add_argument('--model_save_folder', required=True, help='Directory where to save trained models.')
 
-parser.add_argument('--learning_rate', type=float, help='Learning rate.', default=0.0001)
+parser.add_argument('--learning_rate', type=float, help='Learning rate.', default=0.0005)
 parser.add_argument('--batch_size', type=int, help='Batch size.', default=1)
 parser.add_argument('--lr_decay', type=float, help='Decays the learning rate to x times the original.', default=0.1)
 parser.add_argument('--lr_decay_steps', type=int, help='Decays the learning rate every x steps.', default=30000)
-parser.add_argument('--max_steps', type=int, help='Train up to this number of steps.', default=50000)
+parser.add_argument('--max_steps', type=int, help='Train up to this number of steps.', default=150000)
 
 parser.add_argument('--local_region', type=int, help='Neighbooring scope for context windows (i.e., K).', default=8)
-parser.add_argument('--granularity', type=int, help='Upper limit for each group (i.e., s*).', default=2**14)
+parser.add_argument('--granularity', type=int, help='Upper limit for each group (i.e., s*).', default=2**16)
 parser.add_argument('--init_ratio', type=int, help='The ratio for size of the very first group (i.e., alpha).', default=256)
 parser.add_argument('--expand_ratio', type=int, help='Expand ratio (i.e., r)', default=2)
 
@@ -81,7 +81,7 @@ np.random.shuffle(files)
 files = files[:]
 # points = kit.read_point_clouds_ycocg(files)
 points = kit.read_point_clouds_gaussian(files)
-
+print(type(points))
 
 loader = Data.DataLoader(
     dataset = points,
@@ -97,7 +97,7 @@ bpps, losses = [], []
 global_step = 0
 
 for epoch in range(1, 9999):
-    print(datetime.datetime.now())
+    # print(datetime.datetime.now())
     # for step, (batch_x, mask, max_points) in enumerate(loader):
     for step, (batch_x) in enumerate(loader):
         B, N, _ = batch_x.shape

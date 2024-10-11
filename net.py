@@ -16,6 +16,11 @@ class Network(nn.Module):
 
         self.pt = kit.PT(in_channel=1, out_channel=128, n_layers=5)
         self.mu_sigma_pred = nn.Sequential(
+            
+            # nn.Linear(512, 256), 
+            # nn.ReLU(),
+            # nn.Linear(256, 128), 
+            # nn.ReLU(),
             nn.Linear(128, 64), 
             nn.ReLU(),
             nn.Linear(64, 16), # 32 -> 16
@@ -48,7 +53,7 @@ class Network(nn.Module):
             # context window gathering
             #opacity = 1, rotation = 360, scale = 10, sh_degree = ??
             
-            context_attr[:, :, 0] = (context_attr[:, :, 0] + 20) / 40
+            context_attr[:, :, 0] = context_attr[:, :, 0] / 1000
             # context_attr[:, :, 1:4] = context_attr[:, :, 1:4]
             _, idx, context_grouped_geo = knn_points(target_geo, context_geo, K=self.local_region, return_nn=True)
             context_grouped_attr = knn_gather(context_attr, idx)
@@ -60,13 +65,14 @@ class Network(nn.Module):
             # Network
             feature = self.pt(context_grouped_geo, context_grouped_attr)
             mu_sigma = self.mu_sigma_pred(feature)
-            mu, sigma = mu_sigma[:, :, :1], torch.exp(mu_sigma[:, :, 1:])
+            mu, sigma = mu_sigma[:, :, :1]+0.5, torch.exp(mu_sigma[:, :, 1:])
+            # print(mu[0,0,:1])
             # mu = torch.nan_to_num(mu, nan=0.0)
             # sigma = torch.nan_to_num(sigma, nan=0.0)  # 너무 작은 값이 되지 않도록 조정
 
 
             # bits, _ = kit.feature_probs_based_mu_sigma(target_attr, mu*255, sigma*32)
-            bits, _ = kit.feature_probs_based_mu_sigma(target_attr, mu*40, sigma)
+            bits, _ = kit.feature_probs_based_mu_sigma(target_attr, mu*1000, sigma*32)
             total_bits += bits
         
         return total_bits

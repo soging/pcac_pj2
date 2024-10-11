@@ -15,6 +15,15 @@ from pyntcloud import PyntCloud
 from pytorch3d.ops.knn import knn_gather, knn_points
 
 
+def sigmoid(x):
+    return 1 / (1 + np.exp(-x))
+
+
+def inverse_sigmoid(x):
+    return np.log(x / (1 - x))
+
+
+
 #core transformation function
 def transformRGBToYCoCg(bitdepth, rgb):
     r = rgb[:, 0]
@@ -73,7 +82,11 @@ def read_point_cloud_gaussian(filepath):
     pc = PyntCloud.from_file(filepath)
     cols=['x', 'y', 'z', 'opacity']
     # cols=['x', 'y', 'z', 'opacity', 'scale_0', 'scale_1', 'scale_2','f_dc_0', 'f_dc_1','f_dc_2', 'rot_0', 'rot_1', 'rot_2', 'rot_3']
+    
     points=pc.points[cols].values
+    opacity_ori = points[:, 3:].astype(np.float32)
+    opacity_sig = 1000*sigmoid(opacity_ori)
+    points[:, 3:] = opacity_sig.astype(float)
     return points
 
 
@@ -107,6 +120,8 @@ def read_point_cloud_gaussian_opacity(filepath):
     plydata = PlyData.read(filepath)
     pc = np.array(np.transpose(np.stack((plydata['vertex']['x'], plydata['vertex']['y'], plydata['vertex']['z'],
                                          plydata['vertex']['opacity'])))).astype(np.float32)
+    
+    pc[:, 3:] = 1000*sigmoid(pc[:, 3:])
     return pc
 
 
@@ -119,7 +134,7 @@ def save_point_cloud_reflactance(pc, path, to_rgb=False):
         color = np.round(cmap(pc[:, 3])[:, :3] * 255)
         pc = np.hstack((pc[:, :3], color))
         pc = pd.DataFrame(pc, columns=['x', 'y', 'z', 'red', 'green', 'blue'])
-        pc[['red','green','blue']] = np.round(np.clip(pc[['red','green','blue']], 0, 255)).astype(np.uint8)
+        pc[['red','green','blue']] = np.round(np.clip(pc[['red','green','blue']], 0, 255)).astype(np.int16)
         cloud = PyntCloud(pc)
         cloud.to_file(path)
     else:
@@ -336,11 +351,11 @@ def get_cdf_ycocg(mu, sigma):
 #opacity에 맞게 수정
 def get_cdf_reflactance(mu, sigma):
     M, d = sigma.shape
-    mu = mu.unsqueeze(-1).repeat(1, 1, 50)
-    sigma = sigma.unsqueeze(-1).repeat(1, 1, 50).clamp(1e-5, 1e10)
+    mu = mu.unsqueeze(-1).repeat(1, 1, 1000)
+    sigma = sigma.unsqueeze(-1).repeat(1, 1, 1000).clamp(1e-10, 1e10)
     gaussian = torch.distributions.laplace.Laplace(mu, sigma)
-    flag = torch.linspace(-20, 20, 50).to(sigma.device).view(1, 1, 50).repeat((M, d, 1))
-    cdf = gaussian.cdf(flag + 0.2)
+    flag = torch.arange(0, 1000).to(sigma.device).view(1, 1, 1000).repeat((M, d, 1))
+    cdf = gaussian.cdf(flag + 0.5)
 
     spatial_dimensions = cdf.shape[:-1] + (1,)
     zeros = torch.zeros(spatial_dimensions, dtype=cdf.dtype, device=cdf.device)
@@ -349,11 +364,11 @@ def get_cdf_reflactance(mu, sigma):
 
 
 def feature_probs_based_mu_sigma(feature, mu, sigma):
-    sigma = sigma.clamp(1e-5, 1e10)
+    sigma = sigma.clamp(1e-10, 1e10)
     # print(mu.shape, sigma.shape, feature.shape)
     gaussian = torch.distributions.laplace.Laplace(mu, sigma)
     probs = gaussian.cdf(feature+0.5) - gaussian.cdf(feature-0.5)
-    total_bits = torch.sum(torch.clamp(-1.0 * torch.log(probs + 1e-10) / math.log(2.0), 0, 50))
+    total_bits = torch.sum(torch.clamp(-1.0 * torch.log(probs + 1e-10) / math.log(2.0),0, 50))
     return total_bits, probs
 
 

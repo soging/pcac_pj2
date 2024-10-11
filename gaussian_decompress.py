@@ -31,8 +31,8 @@ parser.add_argument('--compressed_path', required=True, help='Compressed file sa
 parser.add_argument('--decompressed_path', required=True, help='Decompressed file saving directory.')
 
 parser.add_argument('--local_region', type=int, help='', default=8)
-parser.add_argument('--granularity', type=int, help='', default=2**14)
-parser.add_argument('--init_ratio', type=int, help='', default=1024)
+parser.add_argument('--granularity', type=int, help='', default=2**16)
+parser.add_argument('--init_ratio', type=int, help='', default=256)
 parser.add_argument('--expand_ratio', type=int, help='', default=2)
 parser.add_argument('--prg_seed', type=int, help='', default=2147483647)
 
@@ -82,12 +82,10 @@ with torch.no_grad():
             window_size = min(window_size*args.expand_ratio, args.granularity)
 
             context_geo = batch_x_geo[:, :cursor, :].cuda()
-            if window_size >= args.granularity:
-                context_geo = batch_x_geo[:, cursor:cursor+window_size, :].cuda()
             target_geo = batch_x_geo[:, cursor:cursor+window_size, :].cuda()
             cursor += window_size
 
-            context_attr = context_attr_base.float().cuda() / 20
+            context_attr = context_attr_base.float().cuda() / 1000
             context_attr = context_attr.repeat((1, 1, 1))
 
             _, idx, context_grouped_geo = knn_points(target_geo, context_geo, K=net.local_region, return_nn=True)
@@ -98,9 +96,9 @@ with torch.no_grad():
 
             feature = net.pt(context_grouped_geo, context_grouped_attr)
             mu_sigma = net.mu_sigma_pred(feature)
-            mu, sigma = mu_sigma[:, :, :1], torch.exp(mu_sigma[:, :, 1:])
+            mu, sigma = mu_sigma[:, :, :1]+0.5, torch.exp(mu_sigma[:, :, 1:])
 
-            cdf = kit.get_cdf_reflactance(mu[0]*20, sigma[0])
+            cdf = kit.get_cdf_reflactance(mu[0]*1000, sigma[0]*32)
             cdf = cdf[:, 0, :]
             comp_f = os.path.join(args.compressed_path, fname+f'.{i}.bin')
             with open(comp_f, 'rb') as fin:
