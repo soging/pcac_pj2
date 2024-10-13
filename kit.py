@@ -16,6 +16,8 @@ from pyntcloud import PyntCloud
 from pytorch3d.ops.knn import knn_gather, knn_points
 from torch.distributions.laplace import Laplace
 
+def sigmoid(x):
+    return 1 / (1 + np.exp(-x))
 
 #core transformation function
 def transformRGBToYCoCg(bitdepth, rgb):
@@ -109,8 +111,9 @@ def read_point_cloud_gaussian_opacity(filepath):
     plydata = PlyData.read(filepath)
     pc = np.array(np.transpose(np.stack((plydata['vertex']['x'], plydata['vertex']['y'], plydata['vertex']['z'],
                                          plydata['vertex']['opacity'])))).astype(np.float32)
+    
+    pc[:, 3:] = 1000*sigmoid(pc[:, 3:])
     return pc
-
 
 
 def save_point_cloud_reflactance(pc, path, to_rgb=False):
@@ -150,7 +153,6 @@ def read_point_clouds_ycocg(file_path_list, bar=True):
             pcs = list(p.imap(read_point_cloud_ycocg, file_path_list, 32))
     return pcs
 
-
 def read_point_clouds_gaussian(file_path_list, bar=True):
     print('loading point clouds...')
     with multiprocessing.Pool() as p:
@@ -160,6 +162,16 @@ def read_point_clouds_gaussian(file_path_list, bar=True):
             pcs = list(p.imap(read_point_cloud_gaussian, file_path_list, 32))
     return pcs
 
+def read_point_cloud_gaussian(filepath):
+    pc = PyntCloud.from_file(filepath)
+    cols=['x', 'y', 'z', 'opacity']
+    # cols=['x', 'y', 'z', 'opacity', 'scale_0', 'scale_1', 'scale_2','f_dc_0', 'f_dc_1','f_dc_2', 'rot_0', 'rot_1', 'rot_2', 'rot_3']
+    
+    points=pc.points[cols].values
+    opacity_ori = points[:, 3:].astype(np.float32)
+    opacity_sig = sigmoid(opacity_ori)
+    points[:, 3:] = opacity_sig.astype(float)
+    return points
 
 def n_scale_ball(grouped_xyz):
     B, N, K, _ = grouped_xyz.shape
@@ -334,46 +346,85 @@ def get_cdf_ycocg(mu, sigma):
     cdf_with_0 = torch.cat([zeros, cdf], dim=-1)
     return cdf_with_0
 
-
 def get_cdf_reflactance(mu, sigma):
     M, d = sigma.shape
     
-    # mu와 sigma를 반복적으로 확장 (20000개의 flag에 대해 계산)
-    mu = mu.unsqueeze(-1).repeat(1, 1, 17000)
-    sigma = sigma.unsqueeze(-1).repeat(1, 1, 17000)
-
-    # gaussian = torch.distributions.laplace.Laplace(mu, sigma)
-    gaussian = Laplace(mu, sigma)
+    # 차원 확장
+    mu = mu.unsqueeze(-1).expand(-1, -1, 20000)  # Expand는 repeat과 유사하나 메모리 효율적
+    sigma = sigma.unsqueeze(-1).expand(-1, -1, 20000).clamp(1e-10, 1e10)
     
-    # mu와 sigma의 최소, 최대 값 계산
-    mu_min, mu_max = mu.min(), mu.max()
-    sigma_mean = sigma.mean()
-
-    flag_min = 0.0
-    flag_max = 1.0
-    flags = torch.linspace(flag_min, flag_max, 17000).to(sigma.device)
-    flags = flags.view(1, 1, -1).repeat(M, d, 1)
-
     # Laplace 분포 객체 생성
     laplace_dist = Laplace(mu, sigma)
-    flag_min = torch.tensor(0.0).to(mu.device)
-    flag_max = torch.tensor(1.0).to(mu.device)
-    total_prob = laplace_dist.cdf(flag_max) - laplace_dist.cdf(flag_min)
-    cdf = (laplace_dist.cdf(flags) - laplace_dist.cdf(flag_min)) / total_prob
     
-
-    # CDF에 0 값을 추가
+    # 적절한 범위를 설정하기 위해 K 값 조정
+    K = 1000  # 또는 데이터에 맞게 조정
+    flag_min = 0.0
+    flag_max = 1000
+    flags = torch.linspace(flag_min, flag_max, 20000).to(sigma.device)
+    flags = flags.view(1, 1, -1).repeat(M, d, 1)
+    
+    # flag_min과 flag_max를 mu 주변의 넓은 범위로 설정
+    flag_min = torch.tensor(0)
+    flag_max = torch.tensor(1000)
+    
+    # CDF 계산을 위한 범위 생성
+    cdf_min = laplace_dist.cdf(flag_min)
+    cdf_max = laplace_dist.cdf(flag_max)
+    
+    # 전체 확률 질량 계산
+    total_prob = cdf_max - cdf_min
+    
+    # 정규화된 CDF 계산
+    cdf = (cdf_max - cdf_min) / total_prob
+    
+    # 결과 차원 조정
     spatial_dimensions = cdf.shape[:-1] + (1,)
     zeros = torch.zeros(spatial_dimensions, dtype=cdf.dtype, device=cdf.device)
     cdf_with_0 = torch.cat([zeros, cdf], dim=-1)
     
+
     return cdf_with_0
+
+
+# def get_cdf_reflactance(mu, sigma):
+#     M, d = sigma.shape
+    
+#     # mu와 sigma를 반복적으로 확장 (20000개의 flag에 대해 계산)
+#     mu = mu.unsqueeze(-1).repeat(1, 1, 20000)
+#     sigma = sigma.unsqueeze(-1).repeat(1, 1, 20000)
+
+#     # gaussian = torch.distributions.laplace.Laplace(mu, sigma)
+#     gaussian = Laplace(mu, sigma)
+    
+#     # mu와 sigma의 최소, 최대 값 계산
+#     mu_min, mu_max = mu.min(), mu.max()
+#     sigma_mean = sigma.mean()
+
+#     flag_min = 0.0
+#     flag_max = 20000
+#     flags = torch.linspace(flag_min, flag_max, 20000).to(sigma.device)
+#     flags = flags.view(1, 1, -1).repeat(M, d, 1)
+
+#     # Laplace 분포 객체 생성
+#     laplace_dist = Laplace(mu, sigma)
+#     flag_min = torch.tensor(0.0).to(mu.device)
+#     flag_max = torch.tensor(20000).to(mu.device)
+#     total_prob = laplace_dist.cdf(flag_max) - laplace_dist.cdf(flag_min)
+#     cdf = (laplace_dist.cdf(flags) - laplace_dist.cdf(flag_min)) / total_prob
+    
+
+#     # CDF에 0 값을 추가
+#     spatial_dimensions = cdf.shape[:-1] + (1,)
+#     zeros = torch.zeros(spatial_dimensions, dtype=cdf.dtype, device=cdf.device)
+#     cdf_with_0 = torch.cat([zeros, cdf], dim=-1)
+    
+#     return cdf_with_0
 
 def feature_probs_based_mu_sigma(feature, mu, sigma):
     sigma = sigma.clamp(1e-5, 1e10)
     # print(mu.shape, sigma.shape, feature.shape)
     gaussian = torch.distributions.laplace.Laplace(mu, sigma)
-    probs = gaussian.cdf(feature+0.005) - gaussian.cdf(feature-0.005)
+    probs = gaussian.cdf(feature+0.00005) - gaussian.cdf(feature-0.00005)
     total_bits = torch.sum(torch.clamp(-1.0 * torch.log(probs + 1e-10) / math.log(2.0), 0, 50))
     return total_bits, probs
 

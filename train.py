@@ -32,6 +32,8 @@ np.random.seed(11)
 parser = argparse.ArgumentParser(prog='train.py', description='Training from scratch.', formatter_class=argparse.ArgumentDefaultsHelpFormatter)
 parser.add_argument('--training_data', required=True, help='Training data (Glob pattern).')
 parser.add_argument('--model_save_folder', required=True, help='Directory where to save trained models.')
+parser.add_argument('--validation_split', type=float, default=0.1, help='Fraction of the data to be used as validation set (0-1).')
+
 args = parser.parse_args()
 
 # Directory setup for model saving
@@ -41,10 +43,17 @@ if not os.path.exists(args.model_save_folder):
 # Data preparation
 files = np.array(glob(args.training_data, recursive=True))
 np.random.shuffle(files)
-points = kit.read_point_clouds_gaussian(files)
+split_idx = int(len(files) * (1 - args.validation_split))
+train_files, valid_files = files[:split_idx], files[split_idx:]
+train_points = kit.read_point_clouds_gaussian(train_files)
+valid_points = kit.read_point_clouds_gaussian(valid_files)
 
 # DataLoader setup
-loader = Data.DataLoader(dataset=points, batch_size=wandb.config.batch_size, shuffle=True)
+train_loader = Data.DataLoader(dataset=train_points, batch_size=wandb.config.batch_size, shuffle=True)
+valid_loader = Data.DataLoader(dataset=valid_points, batch_size=wandb.config.batch_size, shuffle=False)
+
+# DataLoader setup
+# loader = Data.DataLoader(dataset=points, batch_size=wandb.config.batch_size, shuffle=True)
 
 # Network and optimizer setup
 ae = Network(local_region=wandb.config.local_region, granularity=wandb.config.granularity, init_ratio=wandb.config.init_ratio, expand_ratio=wandb.config.expand_ratio).cuda().train()
@@ -57,26 +66,24 @@ for epoch in range(1, 9999):
     epoch_losses = []
     epoch_bpps = []
 
-    for step, (batch_x) in enumerate(loader):
+    # Training loop
+    ae.train()  # Set model to training mode
+    for step, (batch_x) in enumerate(train_loader):
         batch_x = batch_x.cuda()
         optimizer.zero_grad()
         total_bits = ae(batch_x)
-        bpp = total_bits / wandb.config.batch_size / batch_x.shape[1]
+        bpp = total_bits / (wandb.config.batch_size * batch_x.shape[1])
         loss = bpp
-        bpp = bpp.item()
         loss.backward()
         optimizer.step()
         global_step += 1
 
         # Accumulate metrics
         epoch_losses.append(loss.item())
-        epoch_bpps.append(bpp)
+        epoch_bpps.append(bpp.item())
 
         if global_step % 200 == 0:
-            print(f"Global Step: {global_step}, BPP: {bpp}")
-
-        # Model saving condition
-        
+            print(f"Global Step: {global_step}, BPP: {bpp.item()}")
 
         # Learning rate decay
         if global_step % wandb.config.lr_decay_steps == 0:
@@ -87,14 +94,39 @@ for epoch in range(1, 9999):
         if global_step >= wandb.config.max_steps:
             break
 
-    # Log epoch metrics
+    # Validation loop
+    ae.eval()  # Set model to evaluation mode
+    with torch.no_grad():
+        val_losses = []
+        val_bpps = []
+        for val_step, (batch_x) in enumerate(valid_loader):
+            batch_x = batch_x.cuda()
+            total_bits = ae(batch_x)
+            bpp = total_bits / (wandb.config.batch_size * batch_x.shape[1])
+            loss = bpp
+            val_losses.append(loss.item())
+            val_bpps.append(bpp.item())
+
+    # Log metrics
     avg_loss = sum(epoch_losses) / len(epoch_losses)
     avg_bpp = sum(epoch_bpps) / len(epoch_bpps)
-    wandb.log({"epoch": epoch, "avg_loss": avg_loss, "avg_bpp": avg_bpp, "learning_rate": optimizer.param_groups[0]['lr']})
-    if min_bpp >= avg_bpp:
-            min_bpp = avg_bpp
-            print("model saved")
-            torch.save(ae.state_dict(), os.path.join(args.model_save_folder, 'ckpt.pt'))
-            wandb.save(os.path.join(args.model_save_folder, 'ckpt.pt'))
+    avg_val_loss = sum(val_losses) / len(val_losses)
+    avg_val_bpp = sum(val_bpps) / len(val_bpps)
+    wandb.log({
+        "epoch": epoch,
+        "avg_loss": avg_loss,
+        "avg_bpp": avg_bpp,
+        "avg_val_loss": avg_val_loss,
+        "avg_val_bpp": avg_val_bpp,
+        "learning_rate": optimizer.param_groups[0]['lr']
+    })
+
+    # Save best model based on validation BPP
+    if min_bpp > avg_val_bpp:
+        min_bpp = avg_val_bpp
+        print("Model saved based on validation BPP improvement")
+        torch.save(ae.state_dict(), os.path.join(args.model_save_folder, 'ckpt.pt'))
+        wandb.save(os.path.join(args.model_save_folder, 'ckpt.pt'))
+
     if global_step >= wandb.config.max_steps:
         break

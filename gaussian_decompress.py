@@ -110,7 +110,8 @@ with torch.no_grad():
                 kit._convert_to_int_and_normalize(cdf, True).cpu(), byte_stream
             )
             decomp_attr = decomp_attr.view(1, -1, 1)
-            decomp_attr = decomp_attr.float() / 16384.0
+            # decomp_attr = decomp_attr.float() / 16384.0
+            decomp_attr = decomp_attr.float() / 16777216.0
             context_attr_base = torch.cat((context_attr_base, decomp_attr), dim=1).clamp(0,1)
             i += 1
             

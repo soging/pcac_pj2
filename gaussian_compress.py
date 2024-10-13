@@ -31,7 +31,7 @@ parser.add_argument('--compressed_path', required=True, help='Compressed file sa
 parser.add_argument('--local_region', type=int, help='Neighboring scope for context windows (i.e., K).', default=8)
 parser.add_argument('--granularity', type=int, help='Upper limit for each group (i.e., s*).', default=2 ** 14)
 parser.add_argument('--init_ratio', type=int, help='The ratio for size of the very first group (i.e., alpha).',
-                    default=1024)
+                    default=256)
 parser.add_argument('--expand_ratio', type=int, help='Expand ratio (i.e., r)', default=2)
 parser.add_argument('--prg_seed', type=int, help='Pseudorandom seed for PRG.', default=2147483647)
 
@@ -63,7 +63,6 @@ with torch.no_grad():
         batch_x = batch_x.cuda()
 
         B, N, _ = batch_x.shape
-        batch_x[:, :, 3] = torch.sigmoid(batch_x[:, :, 3])
 
         print(B,N)
 
@@ -104,7 +103,7 @@ with torch.no_grad():
             target_geo, target_attr = target_ls[i][:, :, :3].clone(), target_ls[i][:, :, 3:].clone()
             context_geo, context_attr = context_ls[i][:, :, :3].clone(), context_ls[i][:, :, 3:].clone()
             target_attr, context_attr = target_attr.repeat((1, 1, 1)), context_attr.repeat((1, 1, 1))
-
+            # context_attr[:, :, 0] = context_attr[:, :, 0] / 1000
             _, idx, context_grouped_geo = knn_points(target_geo, context_geo, K=net.local_region, return_nn=True)
             context_grouped_attr = knn_gather(context_attr, idx)
 
@@ -113,10 +112,18 @@ with torch.no_grad():
 
             feature = net.pt(context_grouped_geo, context_grouped_attr)
             mu_sigma = net.mu_sigma_pred(feature)
-            mu, sigma = mu_sigma[:, :, :1], torch.exp(mu_sigma[:, :, 1:])
+            mu, sigma = mu_sigma[:, :, :1]+0.5, torch.exp(mu_sigma[:, :, 1:])
 
             cdf = kit.get_cdf_reflactance(mu[0], sigma[0])
-            target_feature = (target_attr[0] * 16384).to(torch.int16)
+            cdf_diff = cdf[:,:, 1:] - cdf[:,:, :-1]
+            min_cdf_diff = cdf_diff.min()
+            print("Minimum cdf difference:", min_cdf_diff.item())
+
+            if min_cdf_diff.item() <= 0:
+                raise ValueError("CDF is not strictly increasing.")
+
+            # target_feature = (target_attr[0] * 16384).to(torch.int16)
+            target_feature = (target_attr[0] * 16777216).to(torch.int16)
             cdf = cdf[:, 0, :]
             target_feature = target_feature[:, 0]
 
